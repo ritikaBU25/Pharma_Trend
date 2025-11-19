@@ -1,536 +1,763 @@
-# app.py - Modern Pharma Sales Dashboard with AI Insights (Corporate Blue, Flat KPI Cards)
-from groq import Groq
+# app.py — Trend Analyst and Forecast (Final with Clean Dates + Clean Monthly Forecast)
+
 import os
+import datetime
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from prophet import Prophet
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import datetime
+from sklearn.metrics import r2_score
 
-# -----------------------
-# Page config - must be first Streamlit command
-# -----------------------
-st.set_page_config(page_title="Pharma Sales Intelligence", layout="wide")
-
-# -----------------------
-# Load Groq client safely
-# -----------------------
-groq_client = None
+# optional secrets import may not be necessary in all envs
 try:
-    groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-    if groq_api_key:
-        groq_client = Groq(api_key=groq_api_key)
+    import secrets
 except Exception:
-    groq_client = None
+    pass
 
-# -----------------------
-# Custom CSS (Corporate Blue + flat KPI cards)
-# -----------------------
+try:
+    from prophet import Prophet
+    PROPHET_AVAILABLE = True
+except Exception:
+    PROPHET_AVAILABLE = False
+
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except Exception:
+    GROQ_AVAILABLE = False
+
+# -----------------------------------------------------------
+# Groq client (FIXED INITIALIZATION)
+# -----------------------------------------------------------
+# FIX: Initialize groq_client to None globally to prevent NameError if import/setup fails.
+groq_client = None 
+
+if GROQ_AVAILABLE:
+    try:
+        # Attempt to get API key from secrets or environment variables
+        groq_key = st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None
+    except Exception:
+        groq_key = None
+        
+    groq_key = groq_key or os.getenv("GROQ_API_KEY")
+    
+    if groq_key:
+        try:
+            # Only create the client if the key is found
+            groq_client = Groq(api_key=groq_key)
+        except Exception:
+            # If client creation fails (e.g., bad key), set client to None
+            groq_client = None
+
+# Note: The `USE_LLM` check was removed as it was not essential and simplifies the code.
+
+# -----------------------------------------------------------
+# PAGE CONFIG
+# -----------------------------------------------------------
+st.set_page_config(page_title="Trend Analyst and Forecast", layout="wide")
+
+st.markdown("""
+<style>
+:root{--brand:#0b63b5;--muted:#6b778c;--card:#ffffff;--page:#f6f8fb;}
+body { background-color: var(--page); }
+.header {
+    background: linear-gradient(90deg,var(--brand),#0d74d1);
+    padding:16px; border-radius:8px; color:#fff; margin-bottom:12px;
+}
+.small-muted { color:var(--muted); font-size:12px; }
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown(
-    """
-    <style>
-    :root{
-      --brand:#0b63b5;
-      --muted:#6b778c;
-      --card-bg:#ffffff;
-      --page-bg:#f6f8fb;
-    }
-    body { background-color: var(--page-bg); }
-    .header {
-      background: linear-gradient(90deg, var(--brand), #0d74d1);
-      padding: 18px 24px;
-      border-radius: 8px;
-      color: white;
-      margin-bottom: 18px;
-    }
-    .kpi {
-      background: var(--card-bg);
-      border: 1px solid #e6eef9;
-      padding: 14px;
-      border-radius: 8px;
-      box-shadow: none;
-    }
-    .kpi .label { color: var(--muted); font-size:12px; }
-    .kpi .value { font-size:20px; font-weight:700; color:#0b63b5; margin-top:6px; }
-    .section-title { font-size:18px; font-weight:700; color:#0b63b5; margin-top:8px; }
-    .ai-box { background: white; border: 1px solid #e6eef9; padding:12px; border-radius:8px; }
-    .small-muted { color:var(--muted); font-size:12px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
+    '<div class="header"><h2 style="margin:0">Trend Analyst and Forecast</h2></div>',
+    unsafe_allow_html=True
 )
 
-# -----------------------
-# Header
-# -----------------------
-st.markdown(
-    f"""
-    <div class="header">
-      <h2 style="margin:0;">Pharma Sales Intelligence Dashboard</h2>
-      <div style="font-size:13px; margin-top:6px;">Forecasting, insights and AI-driven recommendations</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
+# -----------------------------------------------------------
+# SIDEBAR — UPLOAD
+# -----------------------------------------------------------
+st.sidebar.header("1 — Upload CSV file(s)")
+uploaded_files = st.sidebar.file_uploader(
+    "Choose one or more CSV files",
+    accept_multiple_files=True,
+    type=["csv"]
 )
 
-# -----------------------
-# Sidebar - Upload + Product + AI Buttons
-# -----------------------
-st.sidebar.header("1) Upload Data")
-daily = st.sidebar.file_uploader("Daily Sales CSV", type=["csv"])
-weekly = st.sidebar.file_uploader("Weekly Sales CSV", type=["csv"])
-monthly = st.sidebar.file_uploader("Monthly Sales CSV", type=["csv"])
-hourly = st.sidebar.file_uploader("Hourly Sales CSV", type=["csv"])
+st.sidebar.markdown("---")
+st.sidebar.header("2 — Analysis options")
+
+forecast_days = st.sidebar.number_input("Days to forecast", 1, 365, 30)
+recent_days = st.sidebar.number_input("Recent days for moving chart", 7, 365, 90)
+rolling_window = st.sidebar.number_input("Moving window (days)", 1, 90, 7)
+
+enable_forecast = st.sidebar.checkbox("Enable forecasting", value=PROPHET_AVAILABLE)
+manual_override = st.sidebar.checkbox("Manual column selection")
+
+# -----------------------------------------------------------
+# SIDEBAR — AI OPTIONS
+# -----------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.header("3 — AI Insight Options")
+
+ai_explain_forecast = st.sidebar.checkbox("AI: Explain forecast performance")
+ai_exec_summary = st.sidebar.checkbox("AI: Executive summary")
+ai_detect_anomalies = st.sidebar.checkbox("AI: Detect anomalies")
+ai_marketing = st.sidebar.checkbox("AI: Marketing suggestion")
+ai_compare = st.sidebar.checkbox("AI: Compare top products")
+ai_seasonality = st.sidebar.checkbox("AI: Explain weekly pattern")
 
 st.sidebar.markdown("---")
-st.sidebar.header("2) Product & Options")
+st.sidebar.header("Ask AI Anything")
+custom_ai_question = st.sidebar.text_area("Type your question", height=80)
+run_custom_ai = st.sidebar.button("Ask AI")
 
-# appearance toggle
-show_kpis = st.sidebar.checkbox("Show KPI cards", value=True)
-show_charts = st.sidebar.checkbox("Show Charts", value=True)
-
-# AI buttons area
 st.sidebar.markdown("---")
-st.sidebar.header("3) AI Insights (press a button)")
+run_ai_now = st.sidebar.button("Run AI Insights")
 
-btn_explain_perf = st.sidebar.button("AI: Explain Forecast Performance")
-btn_exec_summary = st.sidebar.button("AI: Generate Executive Summary")
-btn_anomalies = st.sidebar.button("AI: Detect Anomalies")
-btn_marketing = st.sidebar.button("AI: Recommend Marketing Strategy")
-btn_compare = st.sidebar.button("AI: Compare Top Products")
-btn_seasonality = st.sidebar.button("AI: Explain Seasonal Patterns")
-btn_drivers = st.sidebar.button("AI: Sales Drivers & Reasoning")
-btn_pricing = st.sidebar.button("AI: Pricing Recommendation")
-btn_risk = st.sidebar.button("AI: Risk Analysis")
-btn_customer = st.sidebar.button("AI: Customer Behavior Insights")
-btn_opportunity = st.sidebar.button("AI: Opportunity Detection")
-# Chat input (simple)
-st.sidebar.markdown("---")
-st.sidebar.subheader("Ask AI (quick)")
-chat_query = st.sidebar.text_input("Ask a question about the data and forecasts")
-
-# -----------------------
-# Validate uploads
-# -----------------------
-if not (daily and weekly and monthly and hourly) and not chat_query:
-    st.sidebar.info("Upload 4 CSV files (daily, weekly, monthly, hourly) to enable full features.")
-if not (daily and weekly and monthly and hourly):
-    st.stop()
-
-# -----------------------
-# Read & preprocess uploaded CSVs
-# -----------------------
+# -----------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------
 def safe_read_csv(f):
     try:
         return pd.read_csv(f)
-    except Exception:
-        return pd.DataFrame()
+    except:
+        try:
+            return pd.read_csv(f, encoding="latin-1")
+        except:
+            return pd.DataFrame()
 
-daily = safe_read_csv(daily)
-weekly = safe_read_csv(weekly)
-monthly = safe_read_csv(monthly)
-hourly = safe_read_csv(hourly)
+def detect_date_col(df):
+    possible = ["date", "ds", "timestamp", "time", "datetime"]
+    for c in possible:
+        if c in df.columns:
+            parsed = pd.to_datetime(df[c], errors="coerce")
+            if parsed.notna().sum() >= 3:
+                return c
+    best = None; best_valid = -1
+    for c in df.columns:
+        if pd.api.types.is_numeric_dtype(df[c]): 
+            continue
+        parsed = pd.to_datetime(df[c], errors="coerce")
+        valid = parsed.notna().sum()
+        if valid > best_valid:
+            best_valid = valid
+            best = c
+    return best if best_valid >= 3 else None
 
-for df_temp, freq in [(daily, "daily"), (weekly, "weekly"), (monthly, "monthly"), (hourly, "hourly")]:
-    if df_temp is not None and len(df_temp) > 0:
-        df_temp.columns = df_temp.columns.str.lower()
+def detect_numeric_col(df):
+    nums = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if not nums:
+        return None
+    scores = {c: (df[c].notna().sum(), df[c].nunique()) for c in nums}
+    return max(scores.items(), key=lambda x: (x[1][0], x[1][1]))[0]
 
-# add frequency column
-if "frequency" not in daily.columns:
-    daily["frequency"] = "daily"
-if "frequency" not in weekly.columns:
-    weekly["frequency"] = "weekly"
-if "frequency" not in monthly.columns:
-    monthly["frequency"] = "monthly"
-if "frequency" not in hourly.columns:
-    hourly["frequency"] = "hourly"
+def set_date_ticks(ax, labels, max_ticks=8):
+    if not labels:
+        return
+    step = max(1, len(labels)//max_ticks)
+    ticks = list(range(0, len(labels), step))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([labels[i] for i in ticks], rotation=45, ha='right')
 
-# combine
-df = pd.concat([daily, weekly, monthly, hourly], ignore_index=True)
-df.columns = df.columns.str.lower()
-
-# ensure date column named 'datum'
-if "date" in df.columns and "datum" not in df.columns:
-    df.rename(columns={"date": "datum"}, inplace=True)
-if "datum" not in df.columns:
-    # try common names
-    if "ds" in df.columns:
-        df.rename(columns={"ds": "datum"}, inplace=True)
-    elif "timestamp" in df.columns:
-        df.rename(columns={"timestamp": "datum"}, inplace=True)
-
-# coerce date
-df["datum"] = pd.to_datetime(df["datum"], errors="coerce")
-df = df.dropna(subset=["datum"])
-
-# identify id vars and product cols
-id_vars = [c for c in ["datum", "year", "month", "hour", "weekday name", "frequency"] if c in df.columns]
-product_cols = [c for c in df.columns if c not in id_vars]
-
-# melt to long
-df_long = df.melt(id_vars=id_vars, value_vars=product_cols, var_name="product", value_name="sales")
-df_long["product"] = df_long["product"].astype(str).str.upper()
-df_long["sales"] = pd.to_numeric(df_long["sales"], errors="coerce")
-df_long = df_long.dropna(subset=["sales"])
-df_long = df_long[df_long["sales"] > 0]
-
-# remove outliers (IQR)
-if len(df_long) > 10:
-    Q1, Q3 = df_long["sales"].quantile([0.25, 0.75])
-    IQR = Q3 - Q1
-    df_long = df_long[(df_long["sales"] >= Q1 - 1.5 * IQR) & (df_long["sales"] <= Q3 + 1.5 * IQR)]
-
-# top products
-top_products = df_long.groupby("product")["sales"].sum().sort_values(ascending=False)
-
-st.sidebar.subheader("Select Product")
-selected_product = st.sidebar.selectbox("Product", top_products.index)
-
-# -----------------------
-# Helper: call Groq LLM safely and return text
-# -----------------------
-def ask_ai(prompt, model="llama-3.3-70b-versatile", max_tokens=700, temperature=0.2):
+def ask_ai(prompt, max_tokens=400):
+    # Ensure groq_client is not None before attempting to use it
     if groq_client is None:
-        return "Groq API key not configured. Please set GROQ_API_KEY in Streamlit secrets or environment."
+        return "AI not configured. Please check GROQ_API_KEY setup."
     try:
-        resp = groq_client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": "You are a helpful, business-focused data analyst."},
-                      {"role": "user", "content": prompt}],
+        response = groq_client.chat.completions.create(
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            messages=[
+                {"role":"system","content":"Explain in simple plain English."},
+                {"role":"user","content":prompt}
+            ],
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=0.2
         )
-        return resp.choices[0].message.content
+        return response.choices[0].message.content
     except Exception as e:
-        return f"AI call failed: {str(e)}"
+        return f"AI error: {e}"
 
-# -----------------------
-# Forecasting for selected product
-# -----------------------
-prod = df_long[df_long["product"] == selected_product].groupby("datum")["sales"].sum().reset_index()
-prod = prod.rename(columns={"datum": "ds", "sales": "y"}).sort_values("ds")
-if len(prod) < 20:
-    st.error("Not enough data for this product to model. Choose another product or upload more data.")
+
+# -----------------------------------------------------------
+# PART 1 — Validate uploads, detect columns, clean data
+# -----------------------------------------------------------
+if not uploaded_files:
+    st.info("Please upload at least one CSV file.")
     st.stop()
 
-# remove product-level outliers
-Q1, Q3 = prod["y"].quantile([0.25, 0.75])
-IQR = Q3 - Q1
-prod = prod[(prod["y"] >= Q1 - 1.5 * IQR) & (prod["y"] <= Q3 + 1.5 * IQR)]
+frames = []
+for f in uploaded_files:
+    df_temp = safe_read_csv(f)
+    if df_temp is None or df_temp.empty:
+        st.warning(f"File unreadable — skipped.")
+        continue
+    df_temp.columns = [str(c).strip().lower() for c in df_temp.columns]  # normalize
+    frames.append(df_temp)
 
-split_index = int(len(prod) * 0.80)
-train = prod.iloc[:split_index]
-test = prod.iloc[split_index:]
-
-# fit Prophet
-model = Prophet(weekly_seasonality=True, yearly_seasonality=True)
-model.fit(train)
-
-# predict test
-future_test = test[["ds"]]
-forecast_test = model.predict(future_test)[["ds", "yhat"]]
-test_eval = test.merge(forecast_test, on="ds", how="left").dropna(subset=["yhat"])
-test_eval = test_eval.rename(columns={"yhat": "y_pred"})
-if len(test_eval) == 0:
-    st.error("Model failed to predict. Try different product.")
+if not frames:
+    st.error("No usable CSV data.")
     st.stop()
 
-# metrics
-mae = mean_absolute_error(test_eval["y"], test_eval["y_pred"])
-mse = mean_squared_error(test_eval["y"], test_eval["y_pred"])
-rmse = np.sqrt(mse)
-r2 = r2_score(test_eval["y"], test_eval["y_pred"])
+df_all = pd.concat(frames, ignore_index=True, sort=False)
 
-# full future forecast
-future = model.make_future_dataframe(periods=30)
-forecast = model.predict(future)
-forecast_next = forecast.tail(30).copy()
-forecast_next["ds_fmt"] = forecast_next["ds"].dt.strftime("%d-%b")
+st.markdown("<div class='small-muted'>Columns detected: " + ", ".join(df_all.columns[:25]) + "</div>", unsafe_allow_html=True)
 
-# seasonal components
-weekly_comp = model.predict_seasonal_components(pd.DataFrame({"ds": pd.date_range("2024-01-01", periods=7)}))
-weekly_comp["weekly"] = weekly_comp["weekly"].clip(lower=0)
-trend_df = forecast[["ds", "trend"]].copy()
-trend_df["trend"] = trend_df["trend"].clip(lower=0)
+auto_date = detect_date_col(df_all)
+auto_value = detect_numeric_col(df_all)
 
-# -----------------------
-# KPI cards (Simple Flat Cards - style A)
-# -----------------------
-if show_kpis:
-    total_sales = int(df_long["sales"].sum())
-    avg_daily = float(prod["y"].mean())
-    last_actual = int(prod["y"].iloc[-1])
-    growth = None
-    if len(prod) >= 2:
-        growth = (prod["y"].iloc[-1] - prod["y"].iloc[0]) / (prod["y"].iloc[0] + 1e-9) * 100
-        growth = round(growth, 1)
+if manual_override:
+    date_col = st.selectbox("Choose date column", [None] + list(df_all.columns),
+        index=(list(df_all.columns).index(auto_date) + 1) if auto_date in df_all.columns else 0)
+
+    numeric_cols = [c for c in df_all.columns if pd.api.types.is_numeric_dtype(df_all[c])]
+    value_col = st.selectbox("Choose numeric column", [None] + numeric_cols,
+        index=(numeric_cols.index(auto_value) + 1) if auto_value in numeric_cols else 0)
+else:
+    date_col = auto_date
+    value_col = auto_value
+
+st.markdown(
+    f"<div class='small-muted'>Using date: <b>{date_col}</b> — value: <b>{value_col}</b></div>",
+    unsafe_allow_html=True
+)
+
+if date_col is None or value_col is None:
+    st.error("Could not detect a valid date or numeric column.")
+    st.stop()
+
+# CLEANING
+df_all[date_col] = pd.to_datetime(df_all[date_col], errors="coerce")
+df_all[value_col] = pd.to_numeric(df_all[value_col], errors="coerce")
+
+df_clean = df_all.dropna(subset=[date_col, value_col]).copy()
+if df_clean.shape[0] < 10:
+    st.error("Not enough valid rows after cleaning.")
+    st.stop()
+# -----------------------------------------------------------
+# PART 2 — KPIs + Rolling, Monthly, Yearly, Weekly, Quarterly Charts
+# -----------------------------------------------------------
+
+# Optional category filter (all non-numeric columns except date/value)
+non_numeric_cols = [
+    c for c in df_clean.columns
+    if c not in [date_col, value_col] and not pd.api.types.is_numeric_dtype(df_clean[c])
+]
+
+selected_cat = None
+selected_cat_val = None
+
+if non_numeric_cols:
+    use_cat = st.selectbox("Optional: filter by category", ["None"] + non_numeric_cols)
+    if use_cat != "None":
+        selected_cat = use_cat
+        vals = sorted(df_clean[selected_cat].dropna().astype(str).unique())
+        selected_cat_val = st.selectbox(f"Choose value for {selected_cat}", vals)
+
+if selected_cat and selected_cat_val:
+    df_focus = df_clean[df_clean[selected_cat].astype(str) == str(selected_cat_val)].copy()
+else:
+    df_focus = df_clean.copy()
+
+# -----------------------------------------------------------
+# Aggregate by date → clean working series
+# -----------------------------------------------------------
+series = (
+    df_focus.groupby(date_col)[value_col]
+    .sum()
+    .reset_index()
+    .rename(columns={date_col: "ds", value_col: "y"})
+    .sort_values("ds")
+    .reset_index(drop=True)
+)
+
+# Replace values <=0 → floor = 1
+series_pos = series.copy()
+if (series_pos["y"] <= 0).all():
+    st.error("All values are zero/negative — cannot analyze.")
+    st.stop()
+
+series_pos["y"] = series_pos["y"].clip(lower=1.0)
+
+# -----------------------------------------------------------
+# KPIs
+# -----------------------------------------------------------
+st.subheader("Quick summary")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Total days available", len(series_pos))
+with col2:
+    st.metric("Time range", f"{series_pos['ds'].min().date()} → {series_pos['ds'].max().date()}")
+with col3:
+    st.metric("Average daily value", f"{series_pos['y'].mean():.2f}")
+
+# -----------------------------------------------------------
+# Rolling Average Chart
+# -----------------------------------------------------------
+st.subheader(f"{rolling_window}-day moving average")
+
+series_pos["rolling"] = series_pos["y"].rolling(
+    window=int(rolling_window), min_periods=1
+).mean()
+
+recent = series_pos.tail(int(recent_days)).copy()
+labels_recent = recent["ds"].dt.strftime("%Y-%m-%d").tolist()
+
+fig_r, ax_r = plt.subplots(figsize=(10, 3))
+ax_r.bar(range(len(recent)), recent["rolling"], color="#0b63b5")
+ax_r.set_ylabel("Average value")
+ax_r.set_title(f"Recent {recent_days} days")
+
+set_date_ticks(ax_r, labels_recent)
+plt.tight_layout()
+st.pyplot(fig_r)
+
+# -----------------------------------------------------------
+# Monthly Totals
+# -----------------------------------------------------------
+st.subheader("Monthly totals")
+
+series_pos["month"] = series_pos["ds"].dt.to_period("M").astype(str)
+monthly = series_pos.groupby("month")["y"].sum().reset_index()
+show_months = monthly.tail(24)
+
+fig_m, ax_m = plt.subplots(figsize=(10, 3))
+ax_m.bar(range(len(show_months)), show_months["y"], color="#0d74d1")
+ax_m.set_ylabel("Total value")
+ax_m.set_title("Last 24 months")
+
+set_date_ticks(ax_m, show_months["month"].tolist())
+plt.tight_layout()
+st.pyplot(fig_m)
+
+# -----------------------------------------------------------
+# Yearly Totals
+# -----------------------------------------------------------
+st.subheader("Yearly totals")
+
+series_pos["year"] = series_pos["ds"].dt.year
+yearly = series_pos.groupby("year")["y"].sum().reset_index()
+
+if len(yearly) <= 1:     # fallback
+    show_data = monthly.tail(12)
+    labels = show_data["month"].tolist()
+    values = show_data["y"].tolist()
+    title = "Last 12 Months (fallback)"
+else:
+    show_data = yearly
+    labels = yearly["year"].astype(str).tolist()
+    values = yearly["y"].tolist()
+    title = "Yearly totals"
+
+fig_y, ax_y = plt.subplots(figsize=(8, 3))
+ax_y.bar(labels, values, color="#1d88e5")
+ax_y.set_ylabel("Total value")
+ax_y.set_title(title)
+
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+st.pyplot(fig_y)
+
+# -----------------------------------------------------------
+# Weekly Pattern
+# -----------------------------------------------------------
+st.subheader("Day-of-week pattern")
+
+series_pos["weekday"] = series_pos["ds"].dt.day_name()
+week_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+weekly = series_pos.groupby("weekday")["y"].mean().reindex(week_order)
+
+fig_w, ax_w = plt.subplots(figsize=(8, 3))
+ax_w.bar(week_order, weekly, color="#0b63b5")
+ax_w.set_ylabel("Average value")
+ax_w.set_title("Average value by weekday")
+
+plt.tight_layout()
+st.pyplot(fig_w)
+
+# -----------------------------------------------------------
+# Quarterly Totals — CLEAN LABELS (NO Q1/Q2)
+# -----------------------------------------------------------
+st.subheader("Quarterly totals")
+
+series_pos["quarter_clean"] = (
+    series_pos["ds"].dt.year.astype(str) +
+    " Q" +
+    series_pos["ds"].dt.quarter.astype(str)
+)
+
+quarterly = (
+    series_pos.groupby("quarter_clean")["y"]
+    .sum()
+    .reset_index()
+)
+
+quarterly = quarterly.tail(20)
+
+fig_q, ax_q = plt.subplots(figsize=(10, 3))
+ax_q.bar(quarterly["quarter_clean"], quarterly["y"], color="#147ae0")
+ax_q.set_ylabel("Total value")
+ax_q.set_title("Quarterly totals")
+
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+st.pyplot(fig_q)
+# -----------------------------------------------------------
+# PART 3 — Forecasting (Plain English + Clean Bar Charts)
+# -----------------------------------------------------------
+st.markdown("---")
+st.subheader("Forecast & simple accuracy")
+
+mae = rmse = r2 = mape = None
+
+if enable_forecast and not PROPHET_AVAILABLE:
+    st.info("Prophet is not installed. Install prophet to enable forecasting.")
+    enable_forecast = False
+
+if enable_forecast:
+
+    n = len(series_pos)
+    split_point = max(3, int(n * 0.8))
+
+    train = series_pos.iloc[:split_point].copy()
+    test = series_pos.iloc[split_point:].copy()
+
+    if len(train) < 3 or len(test) == 0:
+        st.info("Not enough data for forecasting.")
     else:
-        growth = 0.0
+        try:
+            model = Prophet(weekly_seasonality=True, yearly_seasonality=True)
+            model.fit(train[["ds", "y"]])
 
-    k1, k2, k3, k4 = st.columns([1.8,1.4,1.4,1.4])
-    with k1:
-        st.markdown('<div class="kpi"><div class="label">Total Sales (all products)</div>'
-                    f'<div class="value">{total_sales:,}</div></div>', unsafe_allow_html=True)
-    with k2:
-        st.markdown('<div class="kpi"><div class="label">Avg Sales (selected)</div>'
-                    f'<div class="value">{avg_daily:.1f}</div></div>', unsafe_allow_html=True)
-    with k3:
-        st.markdown('<div class="kpi"><div class="label">Last Actual Sales (selected)</div>'
-                    f'<div class="value">{last_actual}</div></div>', unsafe_allow_html=True)
-    with k4:
-        st.markdown('<div class="kpi"><div class="label">Growth % (first→last)</div>'
-                    f'<div class="value">{growth}%</div></div>', unsafe_allow_html=True)
+            # -------------------------------
+            # 1. ACTUAL vs PREDICTED (TEST)
+            # -------------------------------
+            test = test.copy()
+            test["ds"] = pd.to_datetime(test["ds"])
 
-# -----------------------
-# Main content: Charts + Results
-# -----------------------
-st.markdown('<div class="section-title">Forecast & Charts</div>', unsafe_allow_html=True)
+            preds_test = model.predict(test[["ds"]])[["ds", "yhat"]]
+            preds_test = preds_test.rename(columns={"yhat": "y_pred"})
+            preds_test["ds"] = pd.to_datetime(preds_test["ds"])
 
-# metrics row
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("MAE", round(mae,2))
-col2.metric("MSE", round(mse,2))
-col3.metric("RMSE", round(rmse,2))
-col4.metric("R²", round(r2,3))
+            merged = pd.merge(test, preds_test, on="ds", how="left")
 
-if show_charts:
-    # actual vs predicted (bar)
-    st.subheader("Average Actual vs Predicted (Test Set)")
-    fig, ax = plt.subplots(figsize=(6,3))
-    ax.bar(["Actual","Predicted"], [test_eval["y"].mean(), test_eval["y_pred"].mean()], color=["#0b63b5","#0d74d1"])
-    ax.set_ylabel("Average Sales")
-    st.pyplot(fig)
+            # Fix NaN predictions (rare)
+            if merged["y_pred"].isna().all():
+                merged["y_pred"] = model.predict(test[["ds"]])["yhat"].values
 
-    # next 30 days forecast
-    st.subheader("Next 30 Days Forecast")
-    fig2, ax2 = plt.subplots(figsize=(10,4))
-    ax2.bar(forecast_next["ds_fmt"], forecast_next["yhat"], color="#0d74d1")
-    ax2.set_xticklabels(forecast_next["ds_fmt"], rotation=90)
-    st.pyplot(fig2)
+            # Clean negatives and zeros
+            merged["y_pred"] = pd.to_numeric(merged["y_pred"], errors="coerce").fillna(1.0)
+            merged["y_true"] = merged["y"].clip(lower=1.0)
+            merged["y_pred"] = merged["y_pred"].clip(lower=1.0)
 
-    # seasonality
-    st.subheader("Weekly Seasonality")
-    figw, axw = plt.subplots(figsize=(8,3))
-    axw.plot(["Sun","Mon","Tue","Wed","Thu","Fri","Sat"], weekly_comp["weekly"], marker='o')
-    st.pyplot(figw)
+            # -------------------------------
+            # 2. Accuracy Metrics
+            # -------------------------------
+            errors = merged["y_true"] - merged["y_pred"]
+            mae = float(np.mean(np.abs(errors)))
+            rmse = float(np.sqrt(np.mean(errors ** 2)))
+            r2 = float(r2_score(merged["y_true"], merged["y_pred"])) if len(merged) > 1 else 0.0
 
-    # trend
-    st.subheader("Trend Over Time")
-    figt, axt = plt.subplots(figsize=(10,3))
-    axt.plot(trend_df["ds"], trend_df["trend"], linewidth=2)
-    axt.xaxis.set_major_locator(plt.MaxNLocator(10))
-    axt.tick_params(axis='x', rotation=45)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                mape = float(np.nanmean(np.abs(errors / merged["y_true"])) * 100)
+            if np.isnan(mape): mape = 0.0
 
-    axt.tick_params(axis='x', rotation=45)
-    st.pyplot(figt)
+            colA, colB, colC, colD = st.columns(4)
+            colA.metric("MAE", f"{mae:.2f}")
+            colB.metric("RMSE", f"{rmse:.2f}")
+            colC.metric("R²", f"{r2:.3f}")
+            colD.metric("MAPE", f"{mape:.1f}%")
 
-# -----------------------
-# AI Actions (Triggered by sidebar buttons)
-# Results will display in main area below charts
-# -----------------------
-st.markdown('<div class="section-title">AI Insights</div>', unsafe_allow_html=True)
+            st.write("Lower MAE/RMSE means better accuracy. Use these numbers for direction, not exact values.")
 
-# helper to build a dataset snippet for prompts
-def dataset_sample_text(n=6):
-    try:
-        return df.head(n).to_string(index=False)
-    except Exception:
-        return "No data sample available."
+            # -------------------------------
+            # 3. CLEAN ACTUAL vs PREDICTED BAR CHART
+            # -------------------------------
+            st.subheader("Actual vs Predicted")
 
-# 1) Explain Forecast Performance (simple client language)
-if btn_explain_perf:
-    prompt = f"""
-Explain the forecasting results below in very simple, client-friendly language.
-Do NOT use technical jargon or metric names. Keep it short and practical.
+            show_n = min(12, len(merged))
+            view = merged.tail(show_n).copy()
 
-Forecast metrics:
-- MAE: {mae:.2f}
-- RMSE: {rmse:.2f}
-- R²: {r2:.3f}
+            view["y_true"] = view["y_true"].clip(lower=1)
+            view["y_pred"] = view["y_pred"].clip(lower=1)
 
-Explain:
-1) What it means when predictions are close to actual sales.
-2) Why predictions sometimes differ from real sales.
-3) How a business manager should interpret these numbers and what actions to take.
+            labels_cmp = view["ds"].dt.strftime("%Y-%m-%d").tolist()
+            x = np.arange(len(labels_cmp))
+            width = 0.35
+
+            fig_cmp, ax_cmp = plt.subplots(figsize=(10, 3.8))
+
+            bars_act = ax_cmp.bar(x - width/2, view["y_true"], width,
+                                 label="Actual", color="#1565C0", edgecolor="black")
+            bars_pred = ax_cmp.bar(x + width/2, view["y_pred"], width,
+                                   label="Predicted", color="#FF8F00", edgecolor="black")
+
+            y_max = max(view["y_true"].max(), view["y_pred"].max())
+            pad = max(1, 0.02 * y_max)
+
+            # Add labels above bars
+            for bar in bars_act:
+                ax_cmp.text(bar.get_x() + bar.get_width()/2, bar.get_height() + pad,
+                            f"{int(bar.get_height()):,}",
+                            ha="center", va="bottom", fontsize=9, color="#0D47A1")
+
+            for bar in bars_pred:
+                ax_cmp.text(bar.get_x() + bar.get_width()/2, bar.get_height() + pad,
+                            f"{int(bar.get_height()):,}",
+                            ha="center", va="bottom", fontsize=9, color="#E65100")
+
+            ax_cmp.set_ylabel("Value")
+            ax_cmp.set_xticks(x)
+            ax_cmp.set_xticklabels(labels_cmp, rotation=40, ha="right")
+            ax_cmp.set_ylim(0, y_max * 1.3)
+            ax_cmp.legend()
+
+            plt.tight_layout()
+            st.pyplot(fig_cmp)
+
+            # -------------------------------
+            # 4. FUTURE FORECAST (Monthly Summary)
+            # -------------------------------
+            st.subheader("Forecasted Sales (Next Months)")
+
+            future = model.make_future_dataframe(periods=int(forecast_days))
+            forecast_df = model.predict(future)[["ds", "yhat"]].rename(columns={"yhat": "y_pred"})
+
+            future_only = forecast_df.tail(int(forecast_days)).copy()
+            future_only["y_pred"] = future_only["y_pred"].clip(lower=1.0)
+
+            # Group by month
+            future_only["month"] = future_only["ds"].dt.to_period("M").astype(str)
+            monthly_future = future_only.groupby("month")["y_pred"].mean().reset_index()
+
+            # If less than 3 months → fallback (3–4 simple buckets)
+            if len(monthly_future) < 3:
+                f = future_only.reset_index(drop=True)
+                k = min(4, len(f))
+                buckets = np.array_split(f, k)
+                labels = []
+                vals = []
+                for b in buckets:
+                    start = b["ds"].dt.strftime("%b %d").iloc[0]
+                    end = b["ds"].dt.strftime("%b %d").iloc[-1]
+                    labels.append(f"{start} → {end}")
+                    vals.append(b["y_pred"].mean())
+                monthly_future = pd.DataFrame({"month": labels, "y_pred": vals})
+
+            # -------------------------------
+            # Plot Monthly Forecast
+            # -------------------------------
+            fig_fm, ax_fm = plt.subplots(figsize=(10, 3.8))
+
+            bars = ax_fm.bar(range(len(monthly_future)),
+                             monthly_future["y_pred"],
+                             color="blue", edgecolor="black")
+
+            y_max2 = monthly_future["y_pred"].max()
+            pad2 = max(1, 0.02 * y_max2)
+
+            for i, bar in enumerate(bars):
+                ax_fm.text(bar.get_x() + bar.get_width()/2,
+                           bar.get_height() + pad2,
+                           f"{int(bar.get_height()):,}",
+                           ha="center", va="bottom", fontsize=10)
+
+            ax_fm.set_xticks(range(len(monthly_future)))
+            ax_fm.set_xticklabels(monthly_future["month"], rotation=40, ha="right")
+            ax_fm.set_title("Forecasted Sales (Monthly Summary)")
+            ax_fm.set_ylabel("Predicted Value")
+
+            plt.tight_layout()
+            st.pyplot(fig_fm)
+
+            # Download CSV
+            csv = monthly_future.to_csv(index=False)
+            st.download_button("Download Monthly Forecast CSV", csv,
+                               file_name="monthly_forecast.csv",
+                               mime="text/csv")
+
+        except Exception as e:
+            st.error(f"Forecast failed: {e}")
+
+else:
+    st.info("Enable forecasting from the sidebar to generate predictions.")
+# -----------------------------------------------------------
+# PART 4 — AI FEATURES (Simple, human-friendly language)
+# -----------------------------------------------------------
+st.markdown("---")
+st.subheader("Smart Insights (AI Powered)")
+
+
+# Prepare text samples for AI
+sample_text = series_pos.head(6).to_string(index=False)
+
+top_items_text = ""
+try:
+    if selected_cat:
+        prod_sums = (
+            df_focus.groupby(selected_cat)[value_col]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        top_items_text = prod_sums.head(5).to_string()
+except Exception:
+    top_items_text = ""
+
+# Line 562 is here (now part of the fixed code)
+if groq_client is None:
+    st.info("AI is not configured. Add GROQ_API_KEY to enable AI features.")
+else:
+    st.markdown(
+        "<div class='small-muted'>AI is active — you can use all insights below.</div>",
+        unsafe_allow_html=True,
+    )
+
+# -----------------------------------------------------------
+# Run multiple AI insights
+# -----------------------------------------------------------
+if run_ai_now:
+
+    if groq_client is None:
+        st.error("AI is not configured.")
+    else:
+        st.subheader("AI Insights (Plain English)")
+
+        # 1 — Explain Forecast Performance
+        if ai_explain_forecast:
+            st.write("### AI — Forecast Explanation")
+            prompt = f"""
+Explain the forecast results in simple, everyday English.
+Do NOT use technical words.
+
+Include:
+• Is the trend going up or down?
+• Is the model roughly accurate?
+• Why MAE/RMSE might be high or low.
+
+Metrics:
+MAE={mae}, RMSE={rmse}, R2={r2}
+
+Recent sample:
+{sample_text}
+"""
+            with st.spinner("AI is explaining forecast..."):
+                out = ask_ai(prompt, max_tokens=350)
+            st.write(out)
+
+        # 2 — Executive Summary
+        if ai_exec_summary:
+            st.write("### AI — Executive Summary")
+            prompt = f"""
+Write a simple 3-bullet summary for senior managers.
+
+Include:
+• 1 key observation  
+• 1 risk  
+• 3 easy next steps  
 
 Data sample:
-{dataset_sample_text(5)}
+{sample_text}
+
+Top items:
+{top_items_text}
 """
-    with st.spinner("AI is preparing a simple explanation..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
+            with st.spinner("AI is writing summary..."):
+                out = ask_ai(prompt, max_tokens=350)
+            st.write(out)
 
-    st.subheader("Forecast Explanation (Client-Friendly)")
-    st.write(text)
+        # 3 — Detect Anomalies
+        if ai_detect_anomalies:
+            st.write("### AI — Anomaly Detection")
+            snippet = (
+                series_pos.sort_values("y", ascending=False)
+                .head(60)
+                .to_string(index=False)
+            )
+            prompt = f"""
+Look at this data and spot unusual behaviour (big jumps, drops, strange values).
+Explain in simple language.
 
-# 2) Executive Summary
-if btn_exec_summary:
-    prompt = f"""
-Create a short executive summary (3-5 bullets) for management from this sales data and forecast.
-Write in plain English, focus on insights and recommended actions.
-
-Data sample:
-{dataset_sample_text(5)}
-"""
-    with st.spinner("AI is generating executive summary..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
-
-    st.subheader("Executive Summary")
-    st.write(text)
-
-# 3) Anomaly Detection
-if btn_anomalies:
-    snippet = df_long.sort_values(["product","sales"], ascending=[True, False]).head(40).to_string(index=False)
-    prompt = f"""
-Scan this sales data snippet and list any likely anomalies: sudden spikes or drops, repeated abnormal values, or suspicious entries.
-Provide dates (if visible) and simple possible reasons (data error, promotion, seasonality).
-Data snippet:
+Data:
 {snippet}
 """
-    with st.spinner("AI is detecting anomalies..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
+            with st.spinner("AI is detecting anomalies..."):
+                out = ask_ai(prompt, max_tokens=350)
+            st.write(out)
 
-    st.subheader("Anomalies & Possible Reasons")
-    st.write(text)
+        # 4 — Marketing / Growth Suggestion
+        if ai_marketing:
+            st.write("### AI — Growth Suggestion")
+            prompt = f"""
+Give one simple, practical suggestion to improve sales or growth.
 
-# 4) Marketing Strategy
-if btn_marketing:
-    prompt = f"""
-Based on this sales data, propose a short marketing plan to increase sales for '{selected_product}'.
-Be practical: suggest channels, timing (weeks/months), and one simple campaign idea.
 Data sample:
-{dataset_sample_text(5)}
+{sample_text}
 """
-    with st.spinner("AI is suggesting marketing actions..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
+            with st.spinner("AI is preparing suggestion..."):
+                out = ask_ai(prompt, max_tokens=250)
+            st.write(out)
 
-    st.subheader("Marketing Recommendations")
-    st.write(text)
+        # 5 — Compare Products / Categories
+        if ai_compare:
+            st.write("### AI — Comparison")
+            if selected_cat:
+                prompt = f"""
+Compare the top items listed below.
 
-# 5) Compare Top Products
-if btn_compare:
-    top3 = list(top_products.head(3).index)
-    prompt = f"""
-Compare these top 3 products: {top3}. Explain in plain business terms which is doing best and why, and which shows the best growth potential.
-Include simple bullets describing strengths and weaknesses.
-Data sample:
-{dataset_sample_text(5)}
+Explain:
+• Which is performing best?
+• One improvement idea for each item.
+• Use easy, everyday language.
+
+Top items:
+{top_items_text}
 """
-    with st.spinner("AI is comparing products..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
+            else:
+                prompt = "No category selected."
 
-    st.subheader("Top Product Comparison")
-    st.write(text)
+            with st.spinner("AI is comparing items..."):
+                out = ask_ai(prompt, max_tokens=350)
+            st.write(out)
 
-# 6) Explain Seasonal Patterns
-if btn_seasonality:
-    weekly_vals = weekly_comp["weekly"].tolist()
-    prompt = f"""
-Explain the weekly seasonal pattern represented by these 7 numbers (Sun→Sat):
+        # 6 — Seasonality Explanation
+        if ai_seasonality:
+            st.write("### AI — Weekly Pattern Explanation")
+            # Ensure 'weekly' variable is available (it should be, from Part 2)
+            try:
+                weekly_vals = weekly.tolist()
+            except NameError:
+                weekly_vals = "N/A"
+                
+            prompt = f"""
+Explain the weekly pattern from Monday to Sunday in simple language.
+
+Numbers:
 {weekly_vals}
-Explain in simple terms what business activities or customer behaviors might cause this pattern.
 """
-    with st.spinner("AI is explaining seasonality..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
+            with st.spinner("AI is explaining weekly pattern..."):
+                out = ask_ai(prompt, max_tokens=300)
+            st.write(out)
 
-    st.subheader("Seasonality Explanation")
-    st.write(text)
-
-# 7) Sales Drivers & Reasoning
-if btn_drivers:
-    prompt = f"""
-Explain likely drivers of sales for '{selected_product}' given this data. Consider seasonality, promotions, and customer behavior.
-Give simple bullet points and recommended checks (e.g., check promo calendar, distribution).
-Data sample:
-{dataset_sample_text(6)}
-"""
-    with st.spinner("AI is identifying drivers..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
-
-    st.subheader("Sales Drivers & Recommendations")
-    st.write(text)
-
-# 8) Pricing Recommendation
-if btn_pricing:
-    prompt = f"""
-Provide a simple pricing recommendation for '{selected_product}' to maximize revenue without hurting demand. Suggest 1 conservative action and 1 moderate action.
-Keep it short and business-focused.
-"""
-    with st.spinner("AI is suggesting pricing actions..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
-
-    st.subheader("Pricing Recommendations")
-    st.write(text)
-
-# 9) Risk Analysis
-if btn_risk:
-    prompt = f"""
-Identify top business risks visible from the dataset (e.g., stockouts, demand drops, seasonality exposure). Provide short mitigation steps for each risk.
-Data sample:
-{dataset_sample_text(6)}
-"""
-    with st.spinner("AI is performing risk analysis..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
-
-    st.subheader("Risk Analysis & Mitigations")
-    st.write(text)
-
-# 10) Customer Behavior Insights
-if btn_customer:
-    prompt = f"""
-Explain likely customer behavior patterns seen in the sales data. Use plain language and suggest one action to engage customers better.
-Data sample:
-{dataset_sample_text(6)}
-"""
-    with st.spinner("AI is analyzing customer behavior..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
-
-    st.subheader("Customer Behavior Insights")
-    st.write(text)
-
-# 11) Opportunity Detection
-if btn_opportunity:
-    prompt = f"""
-Identify 2-3 growth opportunities or product expansion ideas based on sales trends. Keep suggestions practical with a short rationale.
-Data sample:
-{dataset_sample_text(6)}
-"""
-    with st.spinner("AI is finding opportunities..."):
-        text = ask_ai(prompt)
-        text = text.replace("<hr>", "").replace("<hr/>", "").replace("<hr />", "")
-
-    st.subheader("Opportunity Detection")
-    st.write(text)
-
-# 12) Natural Language Chat (quick)
-if chat_query and len(chat_query.strip()) > 0:
-    prompt = f"""
-You are a helpful business analyst. Answer the user's question about the sales data and forecasts clearly and concisely.
+# -----------------------------------------------------------
+# Custom question to AI
+# -----------------------------------------------------------
+if run_custom_ai:
+    if not custom_ai_question.strip():
+        st.warning("Please type a question first.")
+    elif groq_client is None:
+        st.error("AI is not configured.")
+    else:
+        st.subheader("AI — Your Question Answered")
+        prompt = f"""
+Answer the user’s question in plain English, very simple sentences.
 
 User question:
-{chat_query}
+{custom_ai_question}
 
-Context - sample data:
-{dataset_sample_text(6)}
+Context data:
+{sample_text}
 """
-    with st.spinner("AI is answering your question..."):
-        text = ask_ai(prompt, max_tokens=600)
-    st.subheader("AI Chat Response")
-    st.write(text)
-
-# -----------------------
-# Footer / end
-# -----------------------
-st.success("Dashboard Loaded Successfully.")
+        with st.spinner("AI is answering..."):
+            out = ask_ai(prompt, max_tokens=500)
+        st.write(out)
