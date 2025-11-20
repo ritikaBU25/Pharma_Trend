@@ -1,5 +1,3 @@
-# app.py — Trend Analyst and Forecast (Final with Clean Dates + Clean Monthly Forecast)
-
 import os
 import datetime
 import streamlit as st
@@ -8,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score
 
-# optional secrets import may not be necessary in all envs
 try:
     import secrets
 except Exception:
@@ -26,15 +23,10 @@ try:
 except Exception:
     GROQ_AVAILABLE = False
 
-# -----------------------------------------------------------
-# Groq client (FIXED INITIALIZATION)
-# -----------------------------------------------------------
-# FIX: Initialize groq_client to None globally to prevent NameError if import/setup fails.
 groq_client = None 
 
 if GROQ_AVAILABLE:
     try:
-        # Attempt to get API key from secrets or environment variables
         groq_key = st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None
     except Exception:
         groq_key = None
@@ -43,17 +35,11 @@ if GROQ_AVAILABLE:
     
     if groq_key:
         try:
-            # Only create the client if the key is found
             groq_client = Groq(api_key=groq_key)
         except Exception:
-            # If client creation fails (e.g., bad key), set client to None
             groq_client = None
 
-# Note: The `USE_LLM` check was removed as it was not essential and simplifies the code.
 
-# -----------------------------------------------------------
-# PAGE CONFIG
-# -----------------------------------------------------------
 st.set_page_config(page_title="Trend Analyst and Forecast", layout="wide")
 
 st.markdown("""
@@ -73,9 +59,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# -----------------------------------------------------------
-# SIDEBAR — UPLOAD
-# -----------------------------------------------------------
 st.sidebar.header("1 — Upload CSV file(s)")
 uploaded_files = st.sidebar.file_uploader(
     "Choose one or more CSV files",
@@ -93,9 +76,6 @@ rolling_window = st.sidebar.number_input("Moving window (days)", 1, 90, 7)
 enable_forecast = st.sidebar.checkbox("Enable forecasting", value=PROPHET_AVAILABLE)
 manual_override = st.sidebar.checkbox("Manual column selection")
 
-# -----------------------------------------------------------
-# SIDEBAR — AI OPTIONS
-# -----------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.header("3 — AI Insight Options")
 
@@ -114,9 +94,6 @@ run_custom_ai = st.sidebar.button("Ask AI")
 st.sidebar.markdown("---")
 run_ai_now = st.sidebar.button("Run AI Insights")
 
-# -----------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------
 def safe_read_csv(f):
     try:
         return pd.read_csv(f)
@@ -160,7 +137,6 @@ def set_date_ticks(ax, labels, max_ticks=8):
     ax.set_xticklabels([labels[i] for i in ticks], rotation=45, ha='right')
 
 def ask_ai(prompt, max_tokens=400):
-    # Ensure groq_client is not None before attempting to use it
     if groq_client is None:
         return "AI not configured. Please check GROQ_API_KEY setup."
     try:
@@ -178,9 +154,6 @@ def ask_ai(prompt, max_tokens=400):
         return f"AI error: {e}"
 
 
-# -----------------------------------------------------------
-# PART 1 — Validate uploads, detect columns, clean data
-# -----------------------------------------------------------
 if not uploaded_files:
     st.info("Please upload at least one CSV file.")
     st.stop()
@@ -225,7 +198,6 @@ if date_col is None or value_col is None:
     st.error("Could not detect a valid date or numeric column.")
     st.stop()
 
-# CLEANING
 df_all[date_col] = pd.to_datetime(df_all[date_col], errors="coerce")
 df_all[value_col] = pd.to_numeric(df_all[value_col], errors="coerce")
 
@@ -233,11 +205,6 @@ df_clean = df_all.dropna(subset=[date_col, value_col]).copy()
 if df_clean.shape[0] < 10:
     st.error("Not enough valid rows after cleaning.")
     st.stop()
-# -----------------------------------------------------------
-# PART 2 — KPIs + Rolling, Monthly, Yearly, Weekly, Quarterly Charts
-# -----------------------------------------------------------
-
-# Optional category filter (all non-numeric columns except date/value)
 non_numeric_cols = [
     c for c in df_clean.columns
     if c not in [date_col, value_col] and not pd.api.types.is_numeric_dtype(df_clean[c])
@@ -258,9 +225,7 @@ if selected_cat and selected_cat_val:
 else:
     df_focus = df_clean.copy()
 
-# -----------------------------------------------------------
-# Aggregate by date → clean working series
-# -----------------------------------------------------------
+
 series = (
     df_focus.groupby(date_col)[value_col]
     .sum()
@@ -270,7 +235,6 @@ series = (
     .reset_index(drop=True)
 )
 
-# Replace values <=0 → floor = 1
 series_pos = series.copy()
 if (series_pos["y"] <= 0).all():
     st.error("All values are zero/negative — cannot analyze.")
@@ -278,9 +242,7 @@ if (series_pos["y"] <= 0).all():
 
 series_pos["y"] = series_pos["y"].clip(lower=1.0)
 
-# -----------------------------------------------------------
-# KPIs
-# -----------------------------------------------------------
+
 st.subheader("Quick summary")
 
 col1, col2, col3 = st.columns(3)
@@ -291,9 +253,7 @@ with col2:
 with col3:
     st.metric("Average daily value", f"{series_pos['y'].mean():.2f}")
 
-# -----------------------------------------------------------
-# Rolling Average Chart
-# -----------------------------------------------------------
+
 st.subheader(f"{rolling_window}-day moving average")
 
 series_pos["rolling"] = series_pos["y"].rolling(
@@ -312,9 +272,6 @@ set_date_ticks(ax_r, labels_recent)
 plt.tight_layout()
 st.pyplot(fig_r)
 
-# -----------------------------------------------------------
-# Monthly Totals
-# -----------------------------------------------------------
 st.subheader("Monthly totals")
 
 series_pos["month"] = series_pos["ds"].dt.to_period("M").astype(str)
@@ -330,9 +287,6 @@ set_date_ticks(ax_m, show_months["month"].tolist())
 plt.tight_layout()
 st.pyplot(fig_m)
 
-# -----------------------------------------------------------
-# Yearly Totals
-# -----------------------------------------------------------
 st.subheader("Yearly totals")
 
 series_pos["year"] = series_pos["ds"].dt.year
@@ -358,9 +312,6 @@ plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
 st.pyplot(fig_y)
 
-# -----------------------------------------------------------
-# Weekly Pattern
-# -----------------------------------------------------------
 st.subheader("Day-of-week pattern")
 
 series_pos["weekday"] = series_pos["ds"].dt.day_name()
@@ -376,9 +327,7 @@ ax_w.set_title("Average value by weekday")
 plt.tight_layout()
 st.pyplot(fig_w)
 
-# -----------------------------------------------------------
-# Quarterly Totals — CLEAN LABELS (NO Q1/Q2)
-# -----------------------------------------------------------
+
 st.subheader("Quarterly totals")
 
 series_pos["quarter_clean"] = (
@@ -403,9 +352,7 @@ ax_q.set_title("Quarterly totals")
 plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
 st.pyplot(fig_q)
-# -----------------------------------------------------------
-# PART 3 — Forecasting (Plain English + Clean Bar Charts)
-# -----------------------------------------------------------
+
 st.markdown("---")
 st.subheader("Forecast & simple accuracy")
 
@@ -417,10 +364,11 @@ if enable_forecast and not PROPHET_AVAILABLE:
 
 if enable_forecast:
 
+    # Use full data for forecasting (no 80% split)
+    train = series_pos.copy()
     n = len(series_pos)
     split_point = max(3, int(n * 0.8))
 
-    train = series_pos.iloc[:split_point].copy()
     test = series_pos.iloc[split_point:].copy()
 
     if len(train) < 3 or len(test) == 0:
@@ -430,9 +378,6 @@ if enable_forecast:
             model = Prophet(weekly_seasonality=True, yearly_seasonality=True)
             model.fit(train[["ds", "y"]])
 
-            # -------------------------------
-            # 1. ACTUAL vs PREDICTED (TEST)
-            # -------------------------------
             test = test.copy()
             test["ds"] = pd.to_datetime(test["ds"])
 
@@ -442,18 +387,13 @@ if enable_forecast:
 
             merged = pd.merge(test, preds_test, on="ds", how="left")
 
-            # Fix NaN predictions (rare)
             if merged["y_pred"].isna().all():
                 merged["y_pred"] = model.predict(test[["ds"]])["yhat"].values
 
-            # Clean negatives and zeros
             merged["y_pred"] = pd.to_numeric(merged["y_pred"], errors="coerce").fillna(1.0)
             merged["y_true"] = merged["y"].clip(lower=1.0)
             merged["y_pred"] = merged["y_pred"].clip(lower=1.0)
 
-            # -------------------------------
-            # 2. Accuracy Metrics
-            # -------------------------------
             errors = merged["y_true"] - merged["y_pred"]
             mae = float(np.mean(np.abs(errors)))
             rmse = float(np.sqrt(np.mean(errors ** 2)))
@@ -471,9 +411,6 @@ if enable_forecast:
 
             st.write("Lower MAE/RMSE means better accuracy. Use these numbers for direction, not exact values.")
 
-            # -------------------------------
-            # 3. CLEAN ACTUAL vs PREDICTED BAR CHART
-            # -------------------------------
             st.subheader("Actual vs Predicted")
 
             show_n = min(12, len(merged))
@@ -496,7 +433,6 @@ if enable_forecast:
             y_max = max(view["y_true"].max(), view["y_pred"].max())
             pad = max(1, 0.02 * y_max)
 
-            # Add labels above bars
             for bar in bars_act:
                 ax_cmp.text(bar.get_x() + bar.get_width()/2, bar.get_height() + pad,
                             f"{int(bar.get_height()):,}",
@@ -516,9 +452,6 @@ if enable_forecast:
             plt.tight_layout()
             st.pyplot(fig_cmp)
 
-            # -------------------------------
-            # 4. FUTURE FORECAST (Monthly Summary)
-            # -------------------------------
             st.subheader("Forecasted Sales (Next Months)")
 
             future = model.make_future_dataframe(periods=int(forecast_days))
@@ -527,11 +460,9 @@ if enable_forecast:
             future_only = forecast_df.tail(int(forecast_days)).copy()
             future_only["y_pred"] = future_only["y_pred"].clip(lower=1.0)
 
-            # Group by month
             future_only["month"] = future_only["ds"].dt.to_period("M").astype(str)
             monthly_future = future_only.groupby("month")["y_pred"].mean().reset_index()
 
-            # If less than 3 months → fallback (3–4 simple buckets)
             if len(monthly_future) < 3:
                 f = future_only.reset_index(drop=True)
                 k = min(4, len(f))
@@ -545,9 +476,7 @@ if enable_forecast:
                     vals.append(b["y_pred"].mean())
                 monthly_future = pd.DataFrame({"month": labels, "y_pred": vals})
 
-            # -------------------------------
-            # Plot Monthly Forecast
-            # -------------------------------
+
             fig_fm, ax_fm = plt.subplots(figsize=(10, 3.8))
 
             bars = ax_fm.bar(range(len(monthly_future)),
@@ -555,8 +484,8 @@ if enable_forecast:
                              color="blue", edgecolor="black")
 
             y_max2 = monthly_future["y_pred"].max()
-            pad2 = max(1, 0.02 * y_max2)
-
+            
+            pad2=max(1,0.02*y_max2)
             for i, bar in enumerate(bars):
                 ax_fm.text(bar.get_x() + bar.get_width()/2,
                            bar.get_height() + pad2,
@@ -571,7 +500,6 @@ if enable_forecast:
             plt.tight_layout()
             st.pyplot(fig_fm)
 
-            # Download CSV
             csv = monthly_future.to_csv(index=False)
             st.download_button("Download Monthly Forecast CSV", csv,
                                file_name="monthly_forecast.csv",
@@ -582,14 +510,10 @@ if enable_forecast:
 
 else:
     st.info("Enable forecasting from the sidebar to generate predictions.")
-# -----------------------------------------------------------
-# PART 4 — AI FEATURES (Simple, human-friendly language)
-# -----------------------------------------------------------
+
 st.markdown("---")
 st.subheader("Smart Insights (AI Powered)")
 
-
-# Prepare text samples for AI
 sample_text = series_pos.head(6).to_string(index=False)
 
 top_items_text = ""
@@ -604,7 +528,6 @@ try:
 except Exception:
     top_items_text = ""
 
-# Line 562 is here (now part of the fixed code)
 if groq_client is None:
     st.info("AI is not configured. Add GROQ_API_KEY to enable AI features.")
 else:
@@ -613,9 +536,6 @@ else:
         unsafe_allow_html=True,
     )
 
-# -----------------------------------------------------------
-# Run multiple AI insights
-# -----------------------------------------------------------
 if run_ai_now:
 
     if groq_client is None:
@@ -623,7 +543,6 @@ if run_ai_now:
     else:
         st.subheader("AI Insights (Plain English)")
 
-        # 1 — Explain Forecast Performance
         if ai_explain_forecast:
             st.write("### AI — Forecast Explanation")
             prompt = f"""
@@ -645,7 +564,6 @@ Recent sample:
                 out = ask_ai(prompt, max_tokens=350)
             st.write(out)
 
-        # 2 — Executive Summary
         if ai_exec_summary:
             st.write("### AI — Executive Summary")
             prompt = f"""
@@ -685,7 +603,6 @@ Data:
                 out = ask_ai(prompt, max_tokens=350)
             st.write(out)
 
-        # 4 — Marketing / Growth Suggestion
         if ai_marketing:
             st.write("### AI — Growth Suggestion")
             prompt = f"""
@@ -698,7 +615,6 @@ Data sample:
                 out = ask_ai(prompt, max_tokens=250)
             st.write(out)
 
-        # 5 — Compare Products / Categories
         if ai_compare:
             st.write("### AI — Comparison")
             if selected_cat:
@@ -720,10 +636,8 @@ Top items:
                 out = ask_ai(prompt, max_tokens=350)
             st.write(out)
 
-        # 6 — Seasonality Explanation
         if ai_seasonality:
             st.write("### AI — Weekly Pattern Explanation")
-            # Ensure 'weekly' variable is available (it should be, from Part 2)
             try:
                 weekly_vals = weekly.tolist()
             except NameError:
@@ -739,9 +653,6 @@ Numbers:
                 out = ask_ai(prompt, max_tokens=300)
             st.write(out)
 
-# -----------------------------------------------------------
-# Custom question to AI
-# -----------------------------------------------------------
 if run_custom_ai:
     if not custom_ai_question.strip():
         st.warning("Please type a question first.")

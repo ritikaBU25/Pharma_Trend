@@ -1,5 +1,3 @@
-# predict_with_saved_model.py
-
 import pickle
 import pandas as pd
 

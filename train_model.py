@@ -1,5 +1,3 @@
-# train_prophet_model.py
-
 import pickle
 import pandas as pd
 from prophet import Prophet
@@ -11,21 +9,17 @@ def train_and_save_model(input_csv="training_data.csv",
 
     df = pd.read_csv(input_csv)
 
-    # If no columns provided → auto detect
     if date_col is None:
         date_col = df.columns[0]
     if value_col is None:
         value_col = df.columns[1]
 
-    # Feature engineering
     fe = FeatureEngineer(date_col=date_col, value_col=value_col)
     df_fe = fe.transform(df)
 
-    # Train prophet
     model = Prophet(weekly_seasonality=True, yearly_seasonality=True)
     model.fit(df_fe)
 
-    # Save FE + model
     with open(model_path, "wb") as f:
         pickle.dump({"fe": fe, "model": model}, f)
 
